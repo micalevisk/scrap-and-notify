@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "author": "Micael Levi <mykael2010@hotmail.com> (https://micalevisk.github.io)",
+  "license": "MIT",
+  "homepage": "https://github.com/micalevisk/scrap-and-notify#readme",
+  "scripts": {
+    "scrap": "node ./scripts/scrap.js",
+    "notify": "node ./scripts/notify.js"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0-rc.3",
+    "node-fetch": "^2.6.0",
+    "slimbot": "^4.6.0"
+  }
+}

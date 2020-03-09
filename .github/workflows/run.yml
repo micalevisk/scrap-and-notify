@@ -1,0 +1,109 @@
+name: Run
+
+on:
+  schedule:
+    - cron: '0 */10 * * *' # Every 10 hours (AKA three times a day)
+  push:
+    branches: [ master ]
+
+jobs:
+
+  run:
+    runs-on: ubuntu-latest
+    env:
+      ARTIFACT_PATH: current-artifact
+      ARTIFACT_NAME: last-scrap-data
+      SCRAP_OUTPUT_FILENAME: last-article.json
+      SCRAP_CHECKSUM_FILENAME: checksum.md5
+
+    steps:
+    - name: Download and read the last uploaded artifact content to output
+      id: last_artifact_meta
+      uses: micalevisk/last-artifact-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Get content of last artifact files
+      if: success() && steps.last_artifact_meta.outputs.loaded == 'true' #§
+      id: last_artifact
+      uses: gr2m/get-json-paths-action@v1.0.4
+      with:
+        json: "${{ steps.last_artifact_meta.outputs.content }}"
+        hash: "${{ env.SCRAP_CHECKSUM_FILENAME }}"
+        content: "${{ env.SCRAP_OUTPUT_FILENAME }}"
+    - name: Display the last uploaded scrap
+      if: success() && steps.last_artifact_meta.outputs.loaded == 'true' #§
+      run: echo '${{ steps.last_artifact.outputs.content }}'
+
+    - uses: actions/checkout@v2
+      if: success()
+
+    - name: Create path to artifact directory
+      if: success()
+      run: mkdir -v -p ${ARTIFACT_PATH}
+
+    - uses: actions/setup-node@v1
+      if: success()
+      with:
+        node-version: '12.x'
+    - name: Cache Node.js modules
+      if: success()
+      uses: actions/cache@v1
+      with:
+        path: ~/.npm
+        key: ${{ runner.OS }}-node-${{ hashFiles('**/package-lock.json') }}
+        restore-keys: |
+          ${{ runner.OS }}-node-
+          ${{ runner.OS }}-
+    - name: Install NPM dependencies (using the lock file)
+      run: npm ci
+
+    - name: Run the web scrapper and dump the last scrap and save its hash to output
+      if: success()
+      id: last_scrap
+      run: |
+        scrap_output_path="${ARTIFACT_PATH}/${SCRAP_OUTPUT_FILENAME}"
+        npm run scrap --silent -- 1 | jq --raw-output '.[0]?' > "${scrap_output_path}"
+        echo "::set-output name=path::${scrap_output_path}"
+        echo "------------- last scrap result -------------"
+        cat "${scrap_output_path}"
+
+        scrap_checksum_path="${ARTIFACT_PATH}/${SCRAP_CHECKSUM_FILENAME}"
+        jq --raw-output 'join("\t")' "${scrap_output_path}" | md5sum | awk '{printf $1}' > "${scrap_checksum_path}"
+        hash_last_scrap="$(cat ${scrap_checksum_path})"
+        echo "::set-output name=hash::${hash_last_scrap}"
+
+    - name: Check if there is a new post
+      if: success()
+      id: validated
+      run: |
+        if [[ -z "${{ steps.last_artifact.outputs.hash }}" || "${{ steps.last_artifact.outputs.hash }}" != "${{ steps.last_scrap.outputs.hash }}" ]]
+        then
+          echo "new post!!"
+          echo "::set-output name=new::true"
+        else
+          echo "nothing new :)"
+          echo "::set-output name=new::false"
+        fi
+
+    - name: Upload an artifact with the last scrap content and its hash
+      uses: actions/upload-artifact@v1
+      if: success() && steps.validated.outputs.new == 'true'
+      with:
+        name: ${{ env.ARTIFACT_NAME }}
+        path: ${{ env.ARTIFACT_PATH }}
+
+    - name: Delete all artifacts but the last uploaded
+      if: success() && steps.validated.outputs.new == 'true'
+      uses: kolpav/purge-artifacts-action@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        expire-in: 2m # Assuming the last upload didn’t happen in the last 2 minutes.
+
+    - name: Run the notifier
+      if: success() && steps.validated.outputs.new == 'true'
+      run: |
+        text_message="$( jq --raw-output '"#\(.date) <code>\(.time)</code>\n<b>\(.title)</b>\n\(.link)"' ${{ steps.last_scrap.outputs.path }} )"
+        npm run notify --silent -- "${text_message}"
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
